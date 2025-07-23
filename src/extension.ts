@@ -37,6 +37,18 @@ export function activate(context: vscode.ExtensionContext) {
                             }, 100);
                         }
                         return;
+                    case 'checkTodo':
+                        // Handle checking off a todo item
+                        if (editor && message.lineNumber !== undefined) {
+                            checkTodoAtLine(editor, message.lineNumber);
+                        }
+                        return;
+                    case 'jumpToTodo':
+                        // Handle jumping to a todo location
+                        if (editor && message.lineNumber !== undefined) {
+                            jumpToLine(editor, message.lineNumber);
+                        }
+                        return;
                 }
             },
             undefined,
@@ -96,6 +108,33 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     context.subscriptions.push(disposable);
+}
+
+function checkTodoAtLine(editor: vscode.TextEditor, lineNumber: number) {
+    const line = editor.document.lineAt(lineNumber);
+    const lineText = line.text;
+
+    // Find unchecked todo pattern: - [ ] or * [ ]
+    const todoRegex = /^(\s*)([-*])\s+\[\s*\]\s+(.*)$/;
+    const match = lineText.match(todoRegex);
+
+    if (match) {
+        const indent = match[1];
+        const bullet = match[2];
+        const content = match[3];
+        const newText = `${indent}${bullet} [x] ${content}`;
+
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(editor.document.uri, line.range, newText);
+        vscode.workspace.applyEdit(edit);
+    }
+}
+
+function jumpToLine(editor: vscode.TextEditor, lineNumber: number) {
+    const position = new vscode.Position(lineNumber, 0);
+    editor.selection = new vscode.Selection(position, position);
+    editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    vscode.window.showTextDocument(editor.document);
 }
 
 function insertDropdownComponent() {
@@ -210,6 +249,97 @@ function getWebviewContent() {
             
             .toolbar button.active {
                 background-color: var(--vscode-button-hoverBackground);
+            }
+            
+            .todo-section {
+                background-color: var(--vscode-panel-background);
+                border-bottom: 1px solid var(--vscode-panel-border);
+                padding: 12px;
+                max-height: 200px;
+                overflow-y: auto;
+                display: none; /* Hidden by default, shown when todos exist */
+            }
+            
+            .todo-section.visible {
+                display: block;
+            }
+            
+            .todo-header {
+                font-weight: bold;
+                font-size: 12px;
+                text-transform: uppercase;
+                color: var(--vscode-descriptionForeground);
+                margin-bottom: 8px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .todo-count {
+                background-color: var(--vscode-badge-background);
+                color: var(--vscode-badge-foreground);
+                border-radius: 10px;
+                padding: 2px 6px;
+                font-size: 10px;
+                font-weight: normal;
+            }
+            
+            .todo-list {
+                list-style: none;
+                padding: 0;
+                margin: 0;
+            }
+            
+            .todo-item {
+                display: flex;
+                align-items: flex-start;
+                gap: 8px;
+                padding: 4px 0;
+                border-bottom: 1px solid var(--vscode-panel-border);
+                cursor: pointer;
+                transition: background-color 0.2s;
+            }
+            
+            .todo-item:last-child {
+                border-bottom: none;
+            }
+            
+            .todo-item:hover {
+                background-color: var(--vscode-list-hoverBackground);
+                border-radius: 2px;
+                margin: 0 -4px;
+                padding: 4px 4px;
+            }
+            
+            .todo-checkbox {
+                width: 14px;
+                height: 14px;
+                border: 1px solid var(--vscode-checkbox-border);
+                border-radius: 2px;
+                background-color: var(--vscode-checkbox-background);
+                cursor: pointer;
+                flex-shrink: 0;
+                margin-top: 2px;
+                position: relative;
+            }
+            
+            .todo-checkbox:hover {
+                border-color: var(--vscode-checkbox-selectBorder);
+            }
+            
+            .todo-text {
+                flex: 1;
+                font-size: 13px;
+                line-height: 1.4;
+                color: var(--vscode-editor-foreground);
+            }
+            
+            .todo-location {
+                font-size: 11px;
+                color: var(--vscode-descriptionForeground);
+                opacity: 0.8;
+                margin-left: auto;
+                flex-shrink: 0;
             }
             
             #editor {
@@ -506,6 +636,17 @@ function getWebviewContent() {
                     <button onclick="saveContent()" title="Save Changes">💾 Save</button>
                 </div>
                 
+                <!-- Todo Section -->
+                <div id="todo-section" class="todo-section">
+                    <div class="todo-header">
+                        <span>To-Do Items</span>
+                        <span id="todo-count" class="todo-count">0</span>
+                    </div>
+                    <ul id="todo-list" class="todo-list">
+                        <!-- Todo items will be dynamically populated here -->
+                    </ul>
+                </div>
+                
                 <div id="wysiwyg-editor" contenteditable="true" 
                      data-placeholder="Start typing your content here...">
                 </div>
@@ -543,6 +684,85 @@ function getWebviewContent() {
             let isWysiwygMode = true;
             let turndownService = null;
             let updateTimeout;
+            let currentMarkdownText = '';
+
+            // Todo functionality
+            function parseTodosFromMarkdown(markdownText) {
+                const todos = [];
+                const lines = markdownText.split('\\n');
+                
+                lines.forEach((line, index) => {
+                    // Match unchecked todo items: - [ ] or * [ ]
+                    const todoMatch = line.match(/^(\\s*)([-*])\\s+\\[\\s*\\]\\s+(.+)$/);
+                    if (todoMatch) {
+                        todos.push({
+                            lineNumber: index,
+                            text: todoMatch[3].trim(),
+                            indent: todoMatch[1],
+                            bullet: todoMatch[2]
+                        });
+                    }
+                });
+                
+                return todos;
+            }
+            
+            function updateTodoSection(markdownText) {
+                currentMarkdownText = markdownText;
+                const todos = parseTodosFromMarkdown(markdownText);
+                const todoSection = document.getElementById('todo-section');
+                const todoList = document.getElementById('todo-list');
+                const todoCount = document.getElementById('todo-count');
+                
+                // Clear existing todos
+                todoList.innerHTML = '';
+                
+                if (todos.length === 0) {
+                    todoSection.classList.remove('visible');
+                    return;
+                }
+                
+                // Show todo section and update count
+                todoSection.classList.add('visible');
+                todoCount.textContent = todos.length;
+                
+                // Add todo items
+                todos.forEach(todo => {
+                    const todoItem = document.createElement('li');
+                    todoItem.className = 'todo-item';
+                    todoItem.innerHTML = \`
+                        <div class="todo-checkbox" data-line="\${todo.lineNumber}"></div>
+                        <span class="todo-text">\${escapeHtml(todo.text)}</span>
+                        <span class="todo-location">Line \${todo.lineNumber + 1}</span>
+                    \`;
+                    
+                    // Handle checkbox click
+                    const checkbox = todoItem.querySelector('.todo-checkbox');
+                    checkbox.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        vscode.postMessage({
+                            command: 'checkTodo',
+                            lineNumber: todo.lineNumber
+                        });
+                    });
+                    
+                    // Handle item click (jump to location)
+                    todoItem.addEventListener('click', () => {
+                        vscode.postMessage({
+                            command: 'jumpToTodo',
+                            lineNumber: todo.lineNumber
+                        });
+                    });
+                    
+                    todoList.appendChild(todoItem);
+                });
+            }
+            
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
 
             // Initialize Turndown service when available
             function initializeTurndown() {
@@ -609,6 +829,46 @@ function getWebviewContent() {
                             }).join('\\n');
                             
                             return '\\n' + tableContent + '\\n';
+                        }
+                    });
+                    
+                    // Handle todo/checkbox list items
+                    turndownService.addRule('todoListItem', {
+                        filter: function (node, options) {
+                            return node.nodeName === 'LI' && node.querySelector('input[type="checkbox"]');
+                        },
+                        replacement: function (content, node, options) {
+                            const checkbox = node.querySelector('input[type="checkbox"]');
+                            const isChecked = checkbox && checkbox.checked;
+                            const checkboxSymbol = isChecked ? '[x]' : '[ ]';
+                            
+                            // Get the text content without the checkbox
+                            const textContent = node.textContent.replace(/^\\s*/, '').trim();
+                            
+                            // Preserve indentation from the parent list
+                            let indent = '';
+                            let parent = node.parentNode;
+                            while (parent && parent.nodeName !== 'UL' && parent.nodeName !== 'OL') {
+                                parent = parent.parentNode;
+                            }
+                            
+                            // Count nested levels for indentation
+                            let nestLevel = 0;
+                            let currentParent = parent;
+                            while (currentParent && (currentParent.nodeName === 'UL' || currentParent.nodeName === 'OL')) {
+                                nestLevel++;
+                                currentParent = currentParent.parentNode;
+                                while (currentParent && currentParent.nodeName === 'LI') {
+                                    currentParent = currentParent.parentNode;
+                                }
+                            }
+                            
+                            // Add appropriate indentation (2 spaces per level beyond the first)
+                            if (nestLevel > 1) {
+                                indent = '  '.repeat(nestLevel - 1);
+                            }
+                            
+                            return indent + '- ' + checkboxSymbol + ' ' + textContent;
                         }
                     });
                     
@@ -742,6 +1002,9 @@ function getWebviewContent() {
                     } else {
                         content = markdownEditor.value;
                     }
+                    
+                    // Update todo section with current content
+                    updateTodoSection(content);
                     
                     vscode.postMessage({
                         command: 'updateContent',
@@ -1357,6 +1620,10 @@ function getWebviewContent() {
                         const newContent = message.content;
                         if (!isUpdatingFromExtension) {
                             isUpdatingFromExtension = true;
+                            
+                            // Update todo section
+                            updateTodoSection(newContent);
+                            
                             if (isWysiwygMode) {
                                 const currentMarkdown = htmlToMarkdown(wysiwygEditor.innerHTML);
                                 if (currentMarkdown !== newContent) {
