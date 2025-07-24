@@ -46,7 +46,7 @@ export function activate(context: vscode.ExtensionContext) {
                     case 'jumpToTodo':
                         // Handle jumping to a todo location
                         if (editor && message.lineNumber !== undefined) {
-                            jumpToLine(editor, message.lineNumber);
+                            jumpToLine(panel, editor, message.lineNumber);
                         }
                         return;
                 }
@@ -130,11 +130,20 @@ function checkTodoAtLine(editor: vscode.TextEditor, lineNumber: number) {
     }
 }
 
-function jumpToLine(editor: vscode.TextEditor, lineNumber: number) {
+function jumpToLine(panel: vscode.WebviewPanel, editor: vscode.TextEditor, lineNumber: number) {
+    // Reveal in the markdown editor
     const position = new vscode.Position(lineNumber, 0);
     editor.selection = new vscode.Selection(position, position);
     editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    vscode.window.showTextDocument(editor.document);
+
+    // Notify the webview to scroll to the element
+    panel.webview.postMessage({
+        command: 'jumpToElement',
+        lineNumber: lineNumber
+    });
+
+    // Switch to the WYSIWYG view if it's not already active
+    panel.reveal(vscode.ViewColumn.Beside, false);
 }
 
 function insertDropdownComponent() {
@@ -633,6 +642,7 @@ function getWebviewContent() {
                     <button onclick="insertTable()" title="Insert Table">Table</button>
                     <button onclick="insertDropdown()" title="Dropdown">Dropdown</button>
                     <button onclick="insertHorizontalRule()" title="Horizontal Rule">---</button>
+                    <button onclick="insertTodoList()" title="To-Do List">- [ ]</button>
                     <button onclick="saveContent()" title="Save Changes">💾 Save</button>
                 </div>
                 
@@ -835,37 +845,24 @@ function getWebviewContent() {
                     // Handle todo/checkbox list items
                     turndownService.addRule('todoListItem', {
                         filter: function (node, options) {
-                            return node.nodeName === 'LI' && node.querySelector('input[type="checkbox"]');
+                            return node.nodeName === 'LI' && (node.firstChild instanceof HTMLInputElement && node.firstChild.type === 'checkbox');
                         },
                         replacement: function (content, node, options) {
-                            const checkbox = node.querySelector('input[type="checkbox"]');
-                            const isChecked = checkbox && checkbox.checked;
+                            const checkbox = node.firstChild;
+                            const isChecked = checkbox.checked;
                             const checkboxSymbol = isChecked ? '[x]' : '[ ]';
                             
-                            // Get the text content without the checkbox
-                            const textContent = node.textContent.replace(/^\\s*/, '').trim();
+                            // The content will include the checkbox text, so we need to remove it
+                            let textContent = content.trim();
                             
-                            // Preserve indentation from the parent list
+                            // Simple way to handle indentation
                             let indent = '';
                             let parent = node.parentNode;
-                            while (parent && parent.nodeName !== 'UL' && parent.nodeName !== 'OL') {
-                                parent = parent.parentNode;
-                            }
-                            
-                            // Count nested levels for indentation
-                            let nestLevel = 0;
-                            let currentParent = parent;
-                            while (currentParent && (currentParent.nodeName === 'UL' || currentParent.nodeName === 'OL')) {
-                                nestLevel++;
-                                currentParent = currentParent.parentNode;
-                                while (currentParent && currentParent.nodeName === 'LI') {
-                                    currentParent = currentParent.parentNode;
+                            while (parent && parent.nodeName !== 'BODY') {
+                                if (parent.nodeName === 'UL' || parent.nodeName === 'OL') {
+                                    indent += '  ';
                                 }
-                            }
-                            
-                            // Add appropriate indentation (2 spaces per level beyond the first)
-                            if (nestLevel > 1) {
-                                indent = '  '.repeat(nestLevel - 1);
+                                parent = parent.parentNode;
                             }
                             
                             return indent + '- ' + checkboxSymbol + ' ' + textContent;
@@ -902,61 +899,56 @@ function getWebviewContent() {
             // Convert Markdown to HTML
             function markdownToHtml(markdown) {
                 if (typeof marked === 'undefined') {
-                    return markdown; // Fallback
+                    return markdown;
                 }
 
-                // First, let marked parse the whole document.
-                // It will leave the content inside <details> as is.
-                const rawHtml = marked.parse(markdown);
+                const renderer = new marked.Renderer();
+                const lines = markdown.split('\\n');
 
-                // Now, create a temporary DOM to manipulate it.
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(rawHtml, 'text/html');
-
-                // Find all <details> elements.
-                const detailsElements = doc.querySelectorAll('details');
-
-                detailsElements.forEach(details => {
-                    // For each <details> element, we'll process its content.
-                    // We need to separate the summary from the rest.
-                    const summary = details.querySelector('summary');
+                // Helper to find line number for a given text
+                function findLineNumber(text) {
+                    if (!text) return -1;
+                    const cleanText = text.replace(/<[^>]*>/g, '').trim(); // Strip HTML tags and trim
+                    if (!cleanText) return -1;
                     
-                    // We create a temporary container for the content that needs to be parsed.
-                    let contentToParse = '';
-                    let currentNode = summary ? summary.nextSibling : details.firstChild;
-                    
-                    while (currentNode) {
-                        // We gather the HTML content of each node.
-                        contentToParse += currentNode.outerHTML || currentNode.textContent;
-                        currentNode = currentNode.nextSibling;
+                    for (let i = 0; i < lines.length; i++) {
+                        if (lines[i].includes(cleanText)) {
+                            return i;
+                        }
                     }
+                    return -1;
+                }
 
-                    // Now, we parse the collected content as Markdown.
-                    const parsedContent = marked.parse(contentToParse.trim());
-                    
-                    // We clear the original content of the <details> tag.
-                    while (details.firstChild) {
-                        details.removeChild(details.firstChild);
-                    }
+                // Override rendering functions to add line numbers
+                renderer.heading = function (text, level, raw, slugger) {
+                    const line = findLineNumber(raw);
+                    return `<h${level} data-line-number="${line}">${text}</h${level}>`;
+                };
+                renderer.paragraph = function (text) {
+                    const line = findLineNumber(text);
+                    return `<p data-line-number="${line}">${text}</p>`;
+                };
+                renderer.list = function(body, ordered, start) {
+                    const type = ordered ? 'ol' : 'ul';
+                    const line = findLineNumber(body);
+                    return `<${type} data-line-number="${line}" start="${start}">${body}</${type}>`;
+                };
+                renderer.listitem = function(text) {
+                    const line = findLineNumber(text);
+                    return `<li data-line-number="${line}">${text}</li>`;
+                };
+                renderer.blockquote = function(quote) {
+                    const line = findLineNumber(quote);
+                    return `<blockquote data-line-number="${line}">${quote}</blockquote>`;
+                };
+                renderer.code = function(code, language, isEscaped) {
+                    const line = findLineNumber(code);
+                    const className = language ? ` class="language-${language}"` : '';
+                    return `<pre data-line-number="${line}"><code${className}>${isEscaped ? code : escapeHtml(code)}</code></pre>`;
+                };
 
-                    // We re-add the summary if it existed.
-                    if (summary) {
-                        details.appendChild(summary);
-                    }
-                    
-                    // And then we append the newly parsed content.
-                    // We create a div to hold the parsed content, then append its children.
-                    const tempDiv = document.createElement('div');
-                    tempDiv.innerHTML = parsedContent;
-                    
-                    // Append the parsed nodes to the details element
-                    while (tempDiv.firstChild) {
-                        details.appendChild(tempDiv.firstChild);
-                    }
-                });
-
-                // Return the full HTML of the modified document body.
-                return doc.body.innerHTML;
+                marked.setOptions({ renderer });
+                return marked.parse(markdown);
             }
 
             // Make content editable after rendering
@@ -1044,6 +1036,36 @@ function getWebviewContent() {
             // Format text functions
             function formatText(command) {
                 document.execCommand(command, false, null);
+                wysiwygEditor.focus();
+                debouncedUpdate();
+            }
+
+            function insertTodoList() {
+                const selection = window.getSelection();
+                const range = selection.getRangeAt(0);
+
+                const li = document.createElement('li');
+                li.innerHTML = '<input type="checkbox"> ';
+
+                // If the current selection is in a list, insert it there.
+                // Otherwise, create a new list.
+                const parentList = range.startContainer.closest('ul, ol');
+
+                if (parentList) {
+                    parentList.appendChild(li);
+                } else {
+                    const ul = document.createElement('ul');
+                    ul.appendChild(li);
+                    range.deleteContents();
+                    range.insertNode(ul);
+                }
+
+                // Move cursor to the new to-do item
+                range.setStart(li, 1);
+                range.collapse(true);
+                selection.removeAllRanges();
+                selection.addRange(range);
+
                 wysiwygEditor.focus();
                 debouncedUpdate();
             }
@@ -1546,6 +1568,41 @@ function getWebviewContent() {
                     }
                 }
                 
+                // Handle Enter key for to-do list items
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    const selection = window.getSelection();
+                    const range = selection.getRangeAt(0);
+                    const container = range.commonAncestorContainer;
+
+                    const listItem = container.nodeType === Node.ELEMENT_NODE
+                        ? container.closest('li')
+                        : container.parentElement.closest('li');
+
+                    if (listItem && /\[[\sx]\]/.test(listItem.innerHTML)) {
+                        e.preventDefault();
+                        const newListItem = document.createElement('li');
+
+                        // Preserve indentation by checking parent list
+                        const parentList = listItem.parentElement;
+                        if (parentList && (parentList.tagName === 'UL' || parentList.tagName === 'OL')) {
+                            // This is a simple way to create a new to-do. A more robust
+                            // implementation would preserve indentation and list style.
+                            newListItem.innerHTML = '<input type="checkbox"> ';
+
+                            // Insert after current item
+                            parentList.insertBefore(newListItem, listItem.nextSibling);
+
+                            // Move cursor to new item
+                            range.setStart(newListItem, 1);
+                            range.collapse(true);
+                            selection.removeAllRanges();
+                            selection.addRange(range);
+
+                            debouncedUpdate();
+                        }
+                    }
+                }
+
                 // Handle Enter key in table cells
                 if (e.key === 'Enter' && (e.target.tagName === 'TD' || e.target.tagName === 'TH')) {
                     if (!e.shiftKey) {
@@ -1639,6 +1696,18 @@ function getWebviewContent() {
                             setTimeout(() => {
                                 isUpdatingFromExtension = false;
                             }, 200);
+                        }
+                        break;
+                    case 'jumpToElement':
+                        const element = wysiwygEditor.querySelector(`[data-line-number="${message.lineNumber}"]`);
+                        if (element) {
+                            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            // Briefly highlight the element
+                            element.style.transition = 'background-color 0.3s';
+                            element.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
+                            setTimeout(() => {
+                                element.style.backgroundColor = '';
+                            }, 1500);
                         }
                         break;
                 }

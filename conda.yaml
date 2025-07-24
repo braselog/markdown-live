@@ -1,0 +1,12 @@
+name: vscodeExtension
+channels:
+  - conda-forge
+dependencies:
+  - ca-certificates
+  - icu
+  - libcxx
+  - libuv
+  - libzlib
+  - nodejs
+  - openssl
+  - zlib
