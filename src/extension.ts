@@ -788,30 +788,27 @@ function getWebviewContent() {
                         filter: 'details',
                         replacement: function (content, node) {
                             const summary = node.querySelector('summary');
-                            // Use innerHTML to preserve formatting like <b>, <i>, etc.
-                            const summaryContent = summary ? summary.innerHTML : 'Details';
+                            let summaryContent = 'Details';
+                            
+                            if (summary) {
+                                // Process summary content to convert code elements while preserving other HTML
+                                summaryContent = summary.innerHTML;
+                                
+                                // Convert <code> elements to backticks while preserving other HTML formatting
+                                summaryContent = summaryContent.replace(/<code[^>]*>(.*?)<\/code>/g, function(match, content) {
+                                    return String.fromCharCode(96) + content + String.fromCharCode(96);
+                                });
+                            }
                             
                             // The rest of the content needs to be converted from HTML to Markdown.
                             // We can't just use 'content' because that is already converted and includes the summary.
                             // We need to rebuild the content from the child nodes, skipping the summary.
                             let detailsContent = '';
-                            let childNodeStartPrev = '';
-                            let childNodeStartCur = '';
                             for (const childNode of node.childNodes) {
                                 if (childNode.nodeName.toLowerCase() !== 'summary') {
                                     const nodeContent = childNode.outerHTML || childNode.textContent || '';
-                                    // const childNodeStartCur = nodeContent.charAt(0);
-
-                                    // detailsContent += '\\n\\n';
-                                    // detailsContent += childNodeStartCur
-                                    // detailsContent += '\\n\\n';
-
                                     detailsContent += turndownService.turndown(nodeContent);
-                                    // if (((childNodeStartPrev === '-' && childNodeStartCur !== '-') || (childNodeStartPrev !== '-' && childNodeStartCur === '-')) && childNodeStartPrev !== '') {
-                                    //     detailsContent += '\\n'; // Add an additional newline between nodes of different types (list items or paragraphs)
-                                    // }
                                     detailsContent += '\\n\\n'; // Add a newline after each child node
-                                    // childNodeStartPrev = childNodeStartCur; // Update for next iteration
                                 }
                             }
                             
