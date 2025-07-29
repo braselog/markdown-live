@@ -9,7 +9,7 @@ export function activate(context: vscode.ExtensionContext) {
         const panel = vscode.window.createWebviewPanel(
             'markdownLive', // Identifies the type of the webview. Used internally
             'Live View', // Title of the panel displayed to the user
-            vscode.ViewColumn.Beside, // Editor column to show the new webview panel in.
+            vscode.ViewColumn.Beside, //Active, //.Beside Editor column to show the new webview panel in.
             {
                 enableScripts: true, // Enable javascript in the webview
                 retainContextWhenHidden: true // Keep the webview alive when hidden
@@ -131,10 +131,10 @@ function checkTodoAtLine(editor: vscode.TextEditor, lineNumber: number) {
 }
 
 function jumpToLine(panel: vscode.WebviewPanel, editor: vscode.TextEditor, lineNumber: number) {
-    // Reveal in the markdown editor
-    const position = new vscode.Position(lineNumber, 0);
-    editor.selection = new vscode.Selection(position, position);
-    editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    // // Reveal in the markdown editor
+    // const position = new vscode.Position(lineNumber, 0);
+    // editor.selection = new vscode.Selection(position, position);
+    // editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 
     // Notify the webview to scroll to the element
     panel.webview.postMessage({
@@ -142,8 +142,8 @@ function jumpToLine(panel: vscode.WebviewPanel, editor: vscode.TextEditor, lineN
         lineNumber: lineNumber
     });
 
-    // Switch to the WYSIWYG view if it's not already active
-    panel.reveal(vscode.ViewColumn.Beside, false);
+    // // Switch to the WYSIWYG view if it's not already active
+    // panel.reveal(vscode.ViewColumn.Beside, false);
 }
 
 function insertDropdownComponent() {
@@ -740,11 +740,10 @@ function getWebviewContent() {
                 todos.forEach(todo => {
                     const todoItem = document.createElement('li');
                     todoItem.className = 'todo-item';
-                    todoItem.innerHTML = \`
-                        <div class="todo-checkbox" data-line="\${todo.lineNumber}"></div>
-                        <span class="todo-text">\${escapeHtml(todo.text)}</span>
-                        <span class="todo-location">Line \${todo.lineNumber + 1}</span>
-                    \`;
+                    todoItem.innerHTML = 
+                        '<div class="todo-checkbox" data-line="' + todo.lineNumber + '"></div>' +
+                        '<span class="todo-text">' + escapeHtml(todo.text) + '</span>' +
+                        '<span class="todo-location">Line ' + (todo.lineNumber + 1) + '</span>';
                     
                     // Handle checkbox click
                     const checkbox = todoItem.querySelector('.todo-checkbox');
@@ -796,13 +795,27 @@ function getWebviewContent() {
                             // We can't just use 'content' because that is already converted and includes the summary.
                             // We need to rebuild the content from the child nodes, skipping the summary.
                             let detailsContent = '';
+                            let childNodeStartPrev = '';
+                            let childNodeStartCur = '';
                             for (const childNode of node.childNodes) {
                                 if (childNode.nodeName.toLowerCase() !== 'summary') {
-                                    detailsContent += turndownService.turndown(childNode.outerHTML || childNode.textContent);
+                                    const nodeContent = childNode.outerHTML || childNode.textContent || '';
+                                    // const childNodeStartCur = nodeContent.charAt(0);
+
+                                    // detailsContent += '\\n\\n';
+                                    // detailsContent += childNodeStartCur
+                                    // detailsContent += '\\n\\n';
+
+                                    detailsContent += turndownService.turndown(nodeContent);
+                                    // if (((childNodeStartPrev === '-' && childNodeStartCur !== '-') || (childNodeStartPrev !== '-' && childNodeStartCur === '-')) && childNodeStartPrev !== '') {
+                                    //     detailsContent += '\\n'; // Add an additional newline between nodes of different types (list items or paragraphs)
+                                    // }
+                                    detailsContent += '\\n\\n'; // Add a newline after each child node
+                                    // childNodeStartPrev = childNodeStartCur; // Update for next iteration
                                 }
                             }
                             
-                            return '\\n<details>\\n  <summary>' + summaryContent + '</summary>\\n' + detailsContent.trim() + '\\n</details>\\n';
+                            return '\\n<details>\\n  <summary>' + summaryContent + '</summary>' + detailsContent + '</details>\\n';
                         }
                     });
                     
@@ -858,14 +871,20 @@ function getWebviewContent() {
                             // Simple way to handle indentation
                             let indent = '';
                             let parent = node.parentNode;
+                            let count = 0;
                             while (parent && parent.nodeName !== 'BODY') {
+                                count++;
+                                if (count == 1) {
+                                    parent = parent.parentNode;
+                                    continue; // Skip the first parent (the LI itself)
+                                }
                                 if (parent.nodeName === 'UL' || parent.nodeName === 'OL') {
                                     indent += '  ';
                                 }
                                 parent = parent.parentNode;
                             }
                             
-                            return indent + '- ' + checkboxSymbol + ' ' + textContent;
+                            return indent + '- ' + checkboxSymbol + ' ' + textContent + '\\n';
                         }
                     });
                     
@@ -899,55 +918,11 @@ function getWebviewContent() {
             // Convert Markdown to HTML
             function markdownToHtml(markdown) {
                 if (typeof marked === 'undefined') {
-                    return markdown;
+                    return markdown; // Fallback
                 }
-
-                const renderer = new marked.Renderer();
-                const lines = markdown.split('\\n');
-
-                // Helper to find line number for a given text
-                function findLineNumber(text) {
-                    if (!text) return -1;
-                    const cleanText = text.replace(/<[^>]*>/g, '').trim(); // Strip HTML tags and trim
-                    if (!cleanText) return -1;
-                    
-                    for (let i = 0; i < lines.length; i++) {
-                        if (lines[i].includes(cleanText)) {
-                            return i;
-                        }
-                    }
-                    return -1;
-                }
-
-                // Override rendering functions to add line numbers
-                renderer.heading = function (text, level, raw, slugger) {
-                    const line = findLineNumber(raw);
-                    return `<h${level} data-line-number="${line}">${text}</h${level}>`;
-                };
-                renderer.paragraph = function (text) {
-                    const line = findLineNumber(text);
-                    return `<p data-line-number="${line}">${text}</p>`;
-                };
-                renderer.list = function(body, ordered, start) {
-                    const type = ordered ? 'ol' : 'ul';
-                    const line = findLineNumber(body);
-                    return `<${type} data-line-number="${line}" start="${start}">${body}</${type}>`;
-                };
-                renderer.listitem = function(text) {
-                    const line = findLineNumber(text);
-                    return `<li data-line-number="${line}">${text}</li>`;
-                };
-                renderer.blockquote = function(quote) {
-                    const line = findLineNumber(quote);
-                    return `<blockquote data-line-number="${line}">${quote}</blockquote>`;
-                };
-                renderer.code = function(code, language, isEscaped) {
-                    const line = findLineNumber(code);
-                    const className = language ? ` class="language-${language}"` : '';
-                    return `<pre data-line-number="${line}"><code${className}>${isEscaped ? code : escapeHtml(code)}</code></pre>`;
-                };
-
-                marked.setOptions({ renderer });
+            
+                // Simply parse the markdown without special details processing
+                // This will preserve the original details structure
                 return marked.parse(markdown);
             }
 
@@ -1578,22 +1553,37 @@ function getWebviewContent() {
                         ? container.closest('li')
                         : container.parentElement.closest('li');
 
-                    if (listItem && /\[[\sx]\]/.test(listItem.innerHTML)) {
+                    // Check if this is a to-do list item (contains checkbox input or checkbox text)
+                    if (listItem && (
+                        listItem.querySelector('input[type="checkbox"]') || 
+                        /\[[\sx]\]/.test(listItem.textContent)
+                    )) {
                         e.preventDefault();
                         const newListItem = document.createElement('li');
 
                         // Preserve indentation by checking parent list
                         const parentList = listItem.parentElement;
                         if (parentList && (parentList.tagName === 'UL' || parentList.tagName === 'OL')) {
-                            // This is a simple way to create a new to-do. A more robust
-                            // implementation would preserve indentation and list style.
-                            newListItem.innerHTML = '<input type="checkbox"> ';
+                            // Check if current item has checkbox input
+                            if (listItem.querySelector('input[type="checkbox"]')) {
+                                // Create new item with checkbox input
+                                newListItem.innerHTML = '<input type="checkbox"> ';
+                            } else {
+                                // Create new item with checkbox text
+                                newListItem.textContent = '[ ] ';
+                            }
 
                             // Insert after current item
                             parentList.insertBefore(newListItem, listItem.nextSibling);
 
                             // Move cursor to new item
-                            range.setStart(newListItem, 1);
+                            if (newListItem.querySelector('input[type="checkbox"]')) {
+                                // Focus after the checkbox
+                                range.setStart(newListItem, 1);
+                            } else {
+                                // Focus at the end of the checkbox text
+                                range.setStart(newListItem.firstChild, 4); // After '[ ] '
+                            }
                             range.collapse(true);
                             selection.removeAllRanges();
                             selection.addRange(range);
@@ -1682,15 +1672,10 @@ function getWebviewContent() {
                             updateTodoSection(newContent);
                             
                             if (isWysiwygMode) {
-                                const currentMarkdown = htmlToMarkdown(wysiwygEditor.innerHTML);
-                                if (currentMarkdown !== newContent) {
-                                    wysiwygEditor.innerHTML = markdownToHtml(newContent);
-                                    makeContentEditable();
-                                }
+                                wysiwygEditor.innerHTML = markdownToHtml(newContent);
+                                makeContentEditable();
                             } else {
-                                if (markdownEditor.value !== newContent) {
-                                    markdownEditor.value = newContent;
-                                }
+                                markdownEditor.value = newContent;
                             }
                             
                             setTimeout(() => {
@@ -1699,17 +1684,49 @@ function getWebviewContent() {
                         }
                         break;
                     case 'jumpToElement':
-                        const element = wysiwygEditor.querySelector(`[data-line-number="${message.lineNumber}"]`);
-                        if (element) {
-                            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            // Briefly highlight the element
-                            element.style.transition = 'background-color 0.3s';
-                            element.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
-                            setTimeout(() => {
-                                element.style.backgroundColor = '';
-                            }, 1500);
+                        // Get the todo text from the markdown line
+                        const lines = currentMarkdownText.split('\\n');
+                        const targetLine = lines[message.lineNumber];
+                        
+                        if (targetLine && (targetLine.includes('[ ]') || targetLine.includes('[x]'))) {
+                            // Extract the todo text (remove markdown formatting)
+                            const todoText = targetLine.replace(/^.*[-*]\s*\[[\sx]\]\s*/, '').trim();
+                            
+                            if (todoText && todoText.length > 0) {
+                                // Find matching element in WYSIWYG - use more robust matching
+                                const allElements = wysiwygEditor.querySelectorAll('li, p, div');
+                                const targetElement = Array.from(allElements).find(el => {
+                                    const elementText = el.textContent.trim();
+                                    // Skip if element text is empty too
+                                    if (!elementText || elementText.length === 0) return false;
+                                    // Try exact match first, then partial match
+                                    return elementText === todoText || 
+                                           elementText.toLowerCase().includes(todoText.toLowerCase()) ||
+                                           todoText.toLowerCase().includes(elementText.toLowerCase());
+                                });
+                                
+                                if (targetElement) {
+                                    // Open parent details if closed
+                                    const parentDetails = targetElement.closest('details');
+                                    if (parentDetails && !parentDetails.open) {
+                                        parentDetails.open = true;
+                                    }
+                                    
+                                    // Scroll and highlight
+                                    targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                    targetElement.style.transition = 'background-color 0.3s';
+                                    targetElement.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
+                                    setTimeout(() => {
+                                        targetElement.style.backgroundColor = '';
+                                        // Update markdown to reflect opened details
+                                        setTimeout(() => updateMarkdown(), 100);
+                                    }, 1500);
+                                } else {
+                                    console.log('Todo element not found for text:', todoText);
+                                }
+                            }
                         }
-                        break;
+                        return;
                 }
             });
 

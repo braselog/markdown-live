@@ -2,3 +2,5 @@ node_modules
 out
 dist
 miniconda.sh
+.vscode-test/
+*.vsix
